@@ -10,7 +10,8 @@ import {
     TextDocuments, TextDocument, Diagnostic, DiagnosticSeverity,
     InitializeParams, InitializeResult, TextDocumentPositionParams,
     CompletionItem, CompletionItemKind, Hover, SignatureHelp,
-    Command, CodeActionParams, NotificationType
+    SignatureInformation, ParameterInformation, Command, CodeActionParams,
+    NotificationType
 } from 'vscode-languageserver'
 import Ycm, {Settings} from './ycm'
 import * as _ from 'lodash'
@@ -48,9 +49,9 @@ connection.onInitialize((params): InitializeResult => {
             },
             hoverProvider: true,
             definitionProvider: true,
-            // signatureHelpProvider: {
-            //     triggerCharacters: ['(']
-            // }
+            signatureHelpProvider: {
+                triggerCharacters: ['(']
+            },
             codeActionProvider: true
         }
     }
@@ -124,40 +125,86 @@ async function getIssues(document: TextDocument) {
     })
 }
 
-// connection.onSignatureHelp((event) => {
-//     logger(`onSignatureHelp: ${JSON.stringify(event)}`)
-//     return {
-//         signatures: [{
-//             label: 'test1',
-//             documentation: ' test1 test1 test1 test1 test1 test1 test1 test1',
-//             parameters: [{
-//                 label: 'string',
-//                 documentation: 'string string string'
-//             }, {
-//                 label: 'int',
-//                 documentation: 'int int int'
-//             }]
-//         }, {
-//             label: 'test2',
-//             documentation: ' test2 test2 test2 test2 test2 test2 test2 test2',
-//             parameters: [{
-//                 label: 'int',
-//                 documentation: 'string string string'
-//             }, {
-//                 label: 'string',
-//                 documentation: 'int int int'
-//             }]
-//         }]
-//     } as SignatureHelp
-//     // try {
-//     //     // const ycm = await getYcm()
-//     //     // await ycm.getDocQuick(event.textDocument.uri, event.position, documents)
+function countArgs(docString: String, startOffset: number, endOffset: number): number {
+    const scopeChars = {['('] : ')',
+                        ['['] : ']',
+                        ['{'] : '}'}
+    let argCount = 0
+    for (let offset = startOffset; offset < endOffset; offset++) {
+        if (docString[offset] === ',') {
+            argCount++
+            continue
+        }
 
-//     // } catch (err) {
-//     //     logger('onSignatureHelp error', err)
-//     // }
-// })
+        // see if we have a [nested] scope and skip over its contents if we do
+        const scopeOpenChar = docString[offset]
+        const scopeEndChar = scopeChars[scopeOpenChar]
+        if (scopeEndChar) {
+            offset++
+            for (let numToMatch = 1; offset < endOffset && numToMatch > 0; offset++) {
+                let currChar = docString[offset]
+                numToMatch += currChar === scopeOpenChar ? 1 : (currChar === scopeEndChar ? -1 : 0)
+            }
+            // back up since offset is going to be incremented as part of the 'for' loop
+            offset--
+        }
+    }
+    return argCount
+}
 
+connection.onSignatureHelp(async (textDocumentPosition: TextDocumentPositionParams): Promise<SignatureHelp> => {
+    const ycm = await getYcm()
+    const uri = textDocumentPosition.textDocument.uri
+    const doc = documents.get(uri)
+    let offset = doc.offsetAt(textDocumentPosition.position)
+    const origString = doc.getText().slice(0, offset)
+
+    // Replace all single-line strings' contents, so as to not confuse
+    // our later feable parsing attemps by, e.g. a string with a comma in it.
+    // This isn't perfect in many ways, but helps more than it hurts.
+    function replacer(match, introCapture, contentsCapture, endCapture, offset, wholeString) {
+        return introCapture + 'x'.repeat(contentsCapture.length) + endCapture
+    }
+    // regex adapted from http://www.regular-expressions.info/examplesprogrammer.html
+    const docString = origString.replace(/(")([^"\\\r\n]*(?:\\.[^"\\\r\n]*)*)("|$)/g, replacer)
+    // and single-quote character literals
+                                .replace(/(')([^'\\\r\n]*(?:\\.[^'\\\r\n]*)*)('|$)/g, replacer)
+    // and then we can do the same for single-line comments, too, which might contain a comma
+                                .replace(/(\/\/)(.*)($)/gm, replacer)
+
+    // find the function we're completing on.  we skip matched parenthesis that might be
+    // a parameter that is itself a function call.
+    // TODO: this gets caught up if you're typing a '(' that is not part of a function call,
+    //       e.g. for precedence in arithmetic
+    let startOffset = offset - 1
+    let parenthesisCount = 1
+    while (startOffset > 0 && parenthesisCount > 0) {
+        parenthesisCount += docString[startOffset] === ')' ? 1 : (docString[startOffset] === '(' ? -1 : 0)
+        startOffset--
+    }
+
+    // find completion with same function name
+    let args = []
+    let functionName = null
+    let matchingCompletion = await ycm.getExactMatchingCompletion(uri, doc.positionAt(startOffset), documents)
+    if (matchingCompletion) {
+        const signaturesStr = matchingCompletion.documentation.split('\n\n')[0].trim()
+        let signatures = []
+        for (let signature of signaturesStr.split('\n')) {
+            let parametersStr = signature.match(/\((.*)\)/g)[0].slice(1, -1)
+            let parameters = []
+            for (let parameter of parametersStr.split(',')) {
+                parameters.push({label: parameter.trim()} as ParameterInformation)
+            }
+            signatures.push({label: signature, parameters: parameters} as SignatureInformation)
+        }
+        // add 2 to startOffset to move past the '('
+        const activeParameter = countArgs(docString, startOffset + 2, offset)
+        return {signatures: signatures, activeParameter: activeParameter} as SignatureHelp
+    }
+    else
+        return null
+})
 
 // The settings have changed. Is send on server activation
 // as well.

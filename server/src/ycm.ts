@@ -190,8 +190,8 @@ export default class Ycm {
         }
     }
 
-    private buildRequest(currentDocument: string, position: Position = null, documents: TextDocuments = null, event: string = null) {
-        return new YcmRequest(this.window, this.port, this.hmacSecret, this.workingDir, currentDocument, position, documents, event)
+    private buildRequest(currentDocument: string, position: Position = null, documents: TextDocuments = null, event: string = null, replaceText: string = null) {
+       return new YcmRequest(this.window, this.port, this.hmacSecret, this.workingDir, currentDocument, position, documents, event, replaceText)
     }
 
     private runCompleterCommand(documentUri: string, position: Position, documents: TextDocuments, command: string) {
@@ -208,11 +208,65 @@ export default class Ycm {
     }
 
     public async completion(documentUri: string, position: Position, documents: TextDocuments): Promise<CompletionItem[]> {
-        const request = this.buildRequest(documentUri, position, documents)
-        const response = await request.request('completions')
-        const completions = response['completions'] as YcmCompletionItem[]
-        const res = mapYcmCompletionsToLanguageServerCompletions(completions)
+        let request = this.buildRequest(documentUri, position, documents)
+        let response = await request.request('completions')
+        let completions = response['completions'] as YcmCompletionItem[]
+        let res = mapYcmCompletionsToLanguageServerCompletions(completions)
         logger(`completion`, `ycm responsed ${res.length} items`)
+
+        if (res.length === 0) {
+            // try a few other scopes, but only when we know we're requesting a completion
+            // for a function signature.  this also would kind of work for just freeform
+            // identifier completions that editor.quickSuggestions causes anytime we're
+            // typing a word, but:
+            // a) we don't get locals here, which is something very likely the user is looking for
+            // b) it triggers at the beginning of the word, which returns tons of stuff
+            //    and then later on, if a semantic trigger is typed, the list of completions
+            //    is not re-requested, so we don't get a chance to show the correct thing.
+            // note if you're typing fast, the completion could get triggered before the '('
+            // and it might not get re-triggered when the '(' is typed, this will work only
+            // intermittently in those situations.
+            let origDocText: string = null
+            let offset
+            documents.all().some(function(doc: TextDocument, index, docs) {
+                offset = doc.offsetAt(position)
+                if (doc.uri === documentUri && doc.getText().charAt(offset + 1) === '(') {
+                    origDocText = doc.getText()
+                    while (origDocText.charAt(offset).match(/[a-zA-Z0-9_]/) && offset > 0)
+                        offset--
+                    offset++
+                    return true
+                }
+                return false
+            })
+
+            if (!origDocText) {
+                // doesn't look like we were requesting a function sigature, i.e. on an opening paren,
+                // so we just return the nothing we already found and don't try anything else
+                return res
+            }
+
+            const globalScopeText = origDocText.substr(0, offset) + '::' + origDocText.substr(offset)
+            position.character += '::'.length
+            request = this.buildRequest(documentUri, position, documents, null, globalScopeText)
+            position.character -= '::'.length
+            response = await request.request('completions')
+            completions = response['completions'] as YcmCompletionItem[]
+            res = mapYcmCompletionsToLanguageServerCompletions(completions)
+            logger(`completion`, `retry with global scope: ycm responsed ${res.length} items`)
+
+            const classMemberText = origDocText.substr(0, offset) + 'this->' + origDocText.substr(offset)
+            position.character += 'this->'.length
+            request = this.buildRequest(documentUri, position, documents, null, classMemberText)
+            position.character -= 'this->'.length
+            response = await request.request('completions')
+            completions = response['completions'] as YcmCompletionItem[]
+            let additionalRes = mapYcmCompletionsToLanguageServerCompletions(completions)
+            logger(`completion`, `retry with class member: ycm responsed ${additionalRes.length} items`)
+            if (additionalRes) {
+                res = res.concat(additionalRes)
+            }
+        }
         return res
     }
 

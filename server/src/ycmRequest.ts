@@ -25,6 +25,7 @@ export default class YcmRequest {
     private position: Position
     private documents: TextDocuments
     private event: string
+    private replaceText: string
 
     private command: string
 
@@ -35,12 +36,14 @@ export default class YcmRequest {
 
     public constructor(window: RemoteWindow, port: number, secret: Buffer, workingDir: string, currentDocument: string, position: Position, documents: TextDocuments)
     public constructor(window: RemoteWindow, port: number, secret: Buffer, workingDir: string, currentDocument: string, position: Position, documents: TextDocuments, event: string)
-    public constructor(window: RemoteWindow, port: number, secret: Buffer, workingDir: string, currentDocument: string, position: Position = null, documents: TextDocuments = null, event: string = null) {
+    public constructor(window: RemoteWindow, port: number, secret: Buffer, workingDir: string, currentDocument: string, position: Position, documents: TextDocuments, event: string, replaceText: string)
+    public constructor(window: RemoteWindow, port: number, secret: Buffer, workingDir: string, currentDocument: string, position: Position = null, documents: TextDocuments = null, event: string = null, replaceText: string = null) {
         this.workingDir = workingDir
         this.documentUri = currentDocument
         this.position = position
         this.documents = documents
         this.event = event
+        this.replaceText = replaceText
 
         this.port = port
         this.secret = secret
@@ -164,7 +167,7 @@ export default class YcmRequest {
                 const url = crossPlatformUri(it.uri)
                 const type = mapVSCodeLanguageIdToYcmFileType(it.languageId)
                 params.file_data[url] = {
-                    contents: it.getText(),
+                    contents: (it.uri === this.documentUri && this.replaceText) ? this.replaceText : it.getText(),
                     filetypes: [type]
                 }
             })
