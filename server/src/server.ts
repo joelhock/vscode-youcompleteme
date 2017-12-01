@@ -188,15 +188,19 @@ connection.onSignatureHelp(async (textDocumentPosition: TextDocumentPositionPara
     let functionName = null
     let matchingCompletion = await ycm.getExactMatchingCompletion(uri, doc.positionAt(startOffset), documents)
     if (matchingCompletion) {
-        const signaturesStr = matchingCompletion.documentation.split('\n\n')[0].trim()
         let signatures = []
-        for (let signature of signaturesStr.split('\n')) {
-            let parametersStr = signature.match(/\((.*)\)/g)[0].slice(1, -1)
-            let parameters = []
-            for (let parameter of parametersStr.split(',')) {
-                parameters.push({label: parameter.trim()} as ParameterInformation)
+        try {
+            const signaturesStr = matchingCompletion.documentation.split('\n\n')[0].trim()
+            for (let signature of signaturesStr.split('\n')) {
+                let parametersStr = signature.match(/\((.*)\)/g)[0].slice(1, -1)
+                let parameters = []
+                for (let parameter of parametersStr.split(',')) {
+                    parameters.push({label: parameter.trim()} as ParameterInformation)
+                }
+                signatures.push({label: signature, parameters: parameters} as SignatureInformation)
             }
-            signatures.push({label: signature, parameters: parameters} as SignatureInformation)
+        } catch (err) {
+            logger('onSignatureHelp unparseable completion', JSON.stringify(err));
         }
         // add 2 to startOffset to move past the '('
         const activeParameter = countArgs(docString, startOffset + 2, offset)
